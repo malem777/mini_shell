@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/types.h>
+#include <fcntl.h>
 
 int main(){
 
@@ -18,7 +19,7 @@ int main(){
             printf("\nShell\\%s>", user);
             fgets(command, sizeof(command), stdin);
             command[strcspn(command, "\n")] = '\0';
-        }while(command[0]!=='\0');
+        }while(command[0]=='\0');
         if(strcmp(command, "exit") == 0){
             break;
         }
@@ -68,6 +69,25 @@ int main(){
             pid_t pid = fork();
             if(pid<0){free(cmds); exit(1);}
             if(pid==0){
+                if(file != NULL){
+                    int fd;
+                    if(direction == '<'){
+                        fd = open(file, O_RDONLY);
+                        if(fd == -1){
+                            perror("open()");
+                            exit(1);
+                        }
+                        dup2(fd, 0);
+                    }else{
+                        int fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                        if(fd == -1){
+                            perror("open()");
+                            exit(1);
+                        }
+                        dup2(fd, 1);
+                    }
+                    close(fd);
+                }
                 execvp(cmds[0], cmds);
                 perror("execvp");
                 exit(1);
