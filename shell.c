@@ -150,79 +150,131 @@ stage stage_token(char** token){
     return argument;
 }
 
-int main(){
-    char command[512]; char user[128];
+void cleanup_commands(char*** commands) {
+    if (!commands) return;
+    for (int i = 0; commands[i] != NULL; i++) {
+        free(commands[i]);
+    }
+    free(commands);
+}
+
+int main() {
+    char command[512]; 
+    char user[128];
 
     printf("\nShell\\enter a username>");
-    fgets(user, sizeof(user), stdin);
+    if (!fgets(user, sizeof(user), stdin)) return 0;
     user[strcspn(user, "\n")] = '\0';
 
-    do{
-        do{
+    do {
+        do {
             printf("\nShell\\%s>", user);
-            fgets(command, sizeof(command), stdin);
+            if (!fgets(command, sizeof(command), stdin)) break;
             command[strcspn(command, "\n")] = '\0';
-        }while(command[0]=='\0');
-        if(strcmp(command, "exit") == 0){
+        } while (command[0] == '\0');
+
+        if (strcmp(command, "exit") == 0) {
             break;
         }
 
         char** cmds = tokenize(command);
-        if(validate_syntaxe(cmds)==0){
+        if (validate_syntaxe(cmds) == 0) {
             free(cmds);
             continue;
         }
+
         char*** commands = commandsplit(cmds);
-
-        if(cmds[0] == NULL){
+        if (cmds[0] == NULL) {
             free(cmds);
+            cleanup_commands(commands);
             continue;
         }
 
-        if(strcmp(cmds[0], "cd") == 0){
-            if(cmds[1] != NULL){
-                if(chdir(cmds[1])<0){
-                    perror("cd");
+        int num_stages = 0;
+        while (commands[num_stages] != NULL) {
+            num_stages++;
+        }
+
+        int prev_pipe_read = -1;
+
+        for (int i = 0; i < num_stages; i++) {
+            stage argument = stage_token(commands[i]);
+            if (!argument.valid || argument.argv[0] == NULL) {
+                free(argument.argv);
+                continue;
+            }
+            if (strcmp(argument.argv[0], "cd") == 0) {
+                if (argument.argv[1] != NULL) {
+                    if (chdir(argument.argv[1]) < 0) perror("cd");
+                } else {
+                    char* home = getenv("HOME");
+                    if (home != NULL && chdir(home) < 0) perror("cd");
                 }
-            }else{
-                char* home = getenv("HOME");
-                if(home != NULL && chdir(home)<0){
-                    perror("cd");
+                free(argument.argv);
+                continue;
+            }
+
+            int pipefd[2];
+            
+            if (i < num_stages - 1) {
+                if (pipe(pipefd) < 0) {
+                    perror("pipe");
+                    free(argument.argv);
+                    break;
                 }
             }
-            free(cmds);
-        }else{
+
             pid_t pid = fork();
-            if(pid<0){free(cmds); exit(1);}
-            if(pid==0){
-                if(file != NULL){
-                    int fd;
-                    if(direction == '<'){
-                        fd = open(file, O_RDONLY);
-                        if(fd == -1){
-                            perror("open()");
-                            exit(1);
-                        }
-                        dup2(fd, 0);
-                    }else{
-                        fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                        if(fd == -1){
-                            perror("open()");
-                            exit(1);
-                        }
-                        dup2(fd, 1);
-                    }
+            if (pid < 0) {
+                perror("fork");
+                free(argument.argv);
+                break;
+            }
+
+            if (pid == 0) { 
+                if (i > 0) {
+                    dup2(prev_pipe_read, STDIN_FILENO);
+                    close(prev_pipe_read);
+                }
+                if (i < num_stages - 1) {
+                    close(pipefd[0]);
+                    dup2(pipefd[1], STDOUT_FILENO);
+                    close(pipefd[1]);
+                }
+                if (argument.infile != NULL) {
+                    int fd = open(argument.infile, O_RDONLY);
+                    if (fd == -1) { perror("open(infile)"); exit(1); }
+                    dup2(fd, STDIN_FILENO);
                     close(fd);
                 }
-                execvp(cmds[0], cmds);
+                if (argument.outfile != NULL) {
+                    int fd = open(argument.outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                    if (fd == -1) { perror("open(outfile)"); exit(1); }
+                    dup2(fd, STDOUT_FILENO);
+                    close(fd);
+                }
+
+                execvp(argument.argv[0], argument.argv);
                 perror("execvp");
                 exit(1);
-            }else{
-                wait(NULL);
-                free(cmds);
             }
+
+            if (i > 0) {
+                close(prev_pipe_read);
+            }
+            if (i < num_stages - 1) {
+                close(pipefd[1]); 
+                prev_pipe_read = pipefd[0];
+            }
+
+            free(argument.argv);
         }
-    }while(1);
+        while (wait(NULL) > 0);
+
+        free(cmds);
+        cleanup_commands(commands);
+
+    } while (1);
 
     return 0;
 }
